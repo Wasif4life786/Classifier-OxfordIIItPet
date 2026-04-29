@@ -1,3 +1,6 @@
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -65,13 +68,13 @@ class NeuralNetwork(nn.Module):
 if __name__ == '__main__':
     # Changes GPU depending on device
     device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
-
+    print(f"Using device: {device}")
     # TODO: consider changing num workers when on PC
     trainset = torchvision.datasets.OxfordIIITPet(root='./data', split='trainval', transform=train_transform, download=True)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=0)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
 
     testset = torchvision.datasets.OxfordIIITPet(root='./data', split='test', transform=test_transform, download=True)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=0)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
 
     net = NeuralNetwork().to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1).to(device)
