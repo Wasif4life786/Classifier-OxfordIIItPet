@@ -29,26 +29,25 @@ batch_size = 32
 class NeuralNetwork(nn.Module):
     def __init__(self):
         super().__init__()
-        # Each convolution Layer scans the image and tries to detect more and more complex features
-        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.conv4 = nn.Conv2d(128, 256, 3, padding=1)
-        self.bn4 = nn.BatchNorm2d(256)
-        self.conv5 = nn.Conv2d(256, 512, 3, padding=1)
-        self.bn5 = nn.BatchNorm2d(512)
+        self.conv1 = nn.Conv2d(3, 64, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.conv2 = nn.Conv2d(64, 128, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(128)
+        self.conv3 = nn.Conv2d(128, 256, 3, padding=1)
+        self.bn3 = nn.BatchNorm2d(256)
+        self.conv4 = nn.Conv2d(256, 512, 3, padding=1)
+        self.bn4 = nn.BatchNorm2d(512)
+        self.conv5 = nn.Conv2d(512, 1024, 3, padding=1)
+        self.bn5 = nn.BatchNorm2d(1024)
 
         # Pooling settings
         self.pool = nn.MaxPool2d(2, 2)
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1)) # Global Average Pooling
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
         self.fc = nn.Sequential(
-            nn.Linear(512, 512),
+            nn.Linear(1024, 512),
             nn.ReLU(),
-            nn.Dropout(0.4), # Slightly lower dropout
+            nn.Dropout(0.4), 
             nn.Linear(512, 37)
         )
 
@@ -79,10 +78,10 @@ if __name__ == '__main__':
     net = NeuralNetwork().to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1).to(device)
     
-    # Using AdamW with weight decay for better regularization
-    optimizer = optim.AdamW(net.parameters(), lr=0.001, weight_decay=0.01)
+    # Lowered LR to 0.0003
+    optimizer = optim.AdamW(net.parameters(), lr=0.0003, weight_decay=0.01)
     
-    epochs = 30
+    epochs = 5
     # Scheduler with a floor (eta_min) to prevent learning rate from hitting zero
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=0.00001)
     
