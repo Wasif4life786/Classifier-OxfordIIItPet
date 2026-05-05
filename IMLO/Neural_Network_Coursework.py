@@ -26,43 +26,81 @@ train_transform = transforms.Compose([
 
 batch_size = 32
 
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels,stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3,stride=stride, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3,stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        return F.relu(out)
+
 class NeuralNetwork(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 64, 3, padding=1)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.conv2 = nn.Conv2d(64, 128, 3, padding=1)
-        self.bn2 = nn.BatchNorm2d(128)
-        self.conv3 = nn.Conv2d(128, 256, 3, padding=1)
-        self.bn3 = nn.BatchNorm2d(256)
-        self.conv4 = nn.Conv2d(256, 512, 3, padding=1)
-        self.bn4 = nn.BatchNorm2d(512)
-        self.conv5 = nn.Conv2d(512, 1024, 3, padding=1)
-        self.bn5 = nn.BatchNorm2d(1024)
+
+        self.prep = nn.Sequential(
+            nn.Conv2d(3, 64, 7,stride=2, padding=3),
+            nn.BatchNorm2d(64),
+            nn.ReLU()
+        )
+
+        self.layer1 = ResidualBlock(64, 128,stride=2)
+        self.layer2 = ResidualBlock(128, 256,stride=2)
+        self.layer3 = ResidualBlock(256, 512,stride=2)
+        self.layer4 = ResidualBlock(512, 1024,stride=2)
 
         # Pooling settings
-        self.pool = nn.MaxPool2d(2, 2)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
         self.fc = nn.Sequential(
-            nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Dropout(0.4), 
-            nn.Linear(512, 37)
+            nn.Dropout(0.3),
+            nn.Linear(1024, 37)
         )
 
     def forward(self, x):
         # Pool Image multiple times
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))  # 112x112
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))  # 56x56
-        x = self.pool(F.relu(self.bn3(self.conv3(x))))  # 28x28
-        x = self.pool(F.relu(self.bn4(self.conv4(x))))  # 14x14
-        x = self.pool(F.relu(self.bn5(self.conv5(x))))  # 7x7
+        x = self.prep(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.fc(x)
         return x
+
+#TODO: Check if mixup with low dropout or label_smoothing with high dropout is superior
+def mixup_data(x, y, alpha=0.1):
+    """Returns mixed inputs, pairs of targets, and lambda"""
+    if alpha > 0:
+        lam = torch.distributions.Beta(alpha, alpha).sample().to(x.device)
+    else:
+        lam = 1
+
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
 
 if __name__ == '__main__':
     # Changes GPU depending on device
@@ -70,38 +108,45 @@ if __name__ == '__main__':
     print(f"Using device: {device}")
     # TODO: consider changing num workers when on PC
     trainset = torchvision.datasets.OxfordIIITPet(root='./data', split='trainval', transform=train_transform, download=True)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=8)
 
     testset = torchvision.datasets.OxfordIIITPet(root='./data', split='test', transform=test_transform, download=True)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=8)
 
     net = NeuralNetwork().to(device)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1).to(device)
+    criterion = nn.CrossEntropyLoss().to(device)
     
-    # Lowered LR to 0.0003
-    optimizer = optim.AdamW(net.parameters(), lr=0.0003, weight_decay=0.01)
+    #TODO: Consider changing weight_decay
+    optimizer = optim.AdamW(net.parameters(), lr=0.0003, weight_decay=0.1)
     
-    epochs = 5
+    epochs = 30
     # Scheduler with a floor (eta_min) to prevent learning rate from hitting zero
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=0.00001)
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.005,steps_per_epoch=len(trainloader), epochs=epochs)
     
     train_losses, test_losses, test_accuracies = [], [], []
 
     for epoch in range(epochs):
         net.train()
         running_loss = 0.0
+        train_correct, total = 0.0, 0
         for i, (inputs, labels) in enumerate(trainloader, 0):
             inputs, labels = inputs.to(device), labels.to(device)
+            inputs, labels_a, labels_b, lam = mixup_data(inputs, labels, alpha=0.1)
             optimizer.zero_grad()
             outputs = net(inputs)
-            loss = criterion(outputs, labels)
+            loss = mixup_criterion(criterion,outputs, labels_a, labels_b, lam)
             loss.backward()
             optimizer.step()
+            scheduler.step()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            train_correct += (predicted == labels).sum().item()
             running_loss += loss.item()
 
-        train_losses.append(running_loss / len(trainloader))
-        scheduler.step()
-        print(f"Epoch {epoch+1}/{epochs} done. LR: {scheduler.get_last_lr()[0]:.6f}")
+        epoch_loss = running_loss / len(trainloader)
+        epoch_acc = train_correct / total * 100
+        train_losses.append(epoch_loss)
+        print(f"Epoch {epoch+1}/{epochs} - Loss: {epoch_loss:.4f} - Training Accuracy: {epoch_acc:.2f}%")
 
     # puts network in evaluation mode, i.e. turns off dropout
     net.eval()
