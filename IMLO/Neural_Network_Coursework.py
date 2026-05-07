@@ -42,10 +42,10 @@ class ResidualBlock(nn.Module):
             )
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
+        out = F.silu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
-        return F.relu(out)
+        return F.silu(out)
 
 class NeuralNetwork(nn.Module):
     def __init__(self):
@@ -54,7 +54,7 @@ class NeuralNetwork(nn.Module):
         self.prep = nn.Sequential(
             nn.Conv2d(3, 64, 7,stride=2, padding=3),
             nn.BatchNorm2d(64),
-            nn.ReLU()
+            nn.SiLU()
         )
 
         self.layer1 = ResidualBlock(64, 128,stride=2)
@@ -82,7 +82,13 @@ class NeuralNetwork(nn.Module):
         x = torch.flatten(x, 1)
         x = self.fc(x)
         return x
-
+def init_weights(m):
+    if isinstance(m, nn.Conv2d):
+        # Kaiming Normal is the standard for ReLU/SiLU
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+    elif isinstance(m, nn.BatchNorm2d):
+        nn.init.constant_(m.weight, 1)
+        nn.init.constant_(m.bias, 0)
 #TODO: Check if mixup with low dropout or label_smoothing with high dropout is superior
 def mixup_data(x, y, alpha=0.1):
     """Returns mixed inputs, pairs of targets, and lambda"""
@@ -106,22 +112,31 @@ if __name__ == '__main__':
     # Changes GPU depending on device
     device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    # TODO: consider changing num workers when on PC
-    trainset = torchvision.datasets.OxfordIIITPet(root='./data', split='trainval', transform=train_transform, download=True)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=8)
+    if device == "mps":
+        trainset = torchvision.datasets.OxfordIIITPet(root='./data', split='trainval', transform=train_transform,
+                                                      download=True)
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=0)
 
-    testset = torchvision.datasets.OxfordIIITPet(root='./data', split='test', transform=test_transform, download=True)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=8)
+        testset = torchvision.datasets.OxfordIIITPet(root='./data', split='test', transform=test_transform,
+                                                     download=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=0)
+    else:
+        trainset = torchvision.datasets.OxfordIIITPet(root='./data', split='trainval', transform=train_transform, download=True)
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=8)
+
+        testset = torchvision.datasets.OxfordIIITPet(root='./data', split='test', transform=test_transform, download=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=8)
 
     net = NeuralNetwork().to(device)
+    net.apply(init_weights)
     criterion = nn.CrossEntropyLoss().to(device)
     
     #TODO: Consider changing weight_decay
-    optimizer = optim.AdamW(net.parameters(), lr=0.0003, weight_decay=0.1)
+    optimizer = optim.AdamW(net.parameters(), lr=0.0003, weight_decay=0.02)
     
-    epochs = 30
-    # Scheduler with a floor (eta_min) to prevent learning rate from hitting zero
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.005,steps_per_epoch=len(trainloader), epochs=epochs)
+    epochs = 5
+    #TODO: Check against other schedulers
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.002,steps_per_epoch=len(trainloader), epochs=epochs)
     
     train_losses, test_losses, test_accuracies = [], [], []
 
@@ -140,7 +155,7 @@ if __name__ == '__main__':
             scheduler.step()
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
-            train_correct += (predicted == labels).sum().item()
+            train_correct += (predicted == labels_a).sum().item()
             running_loss += loss.item()
 
         epoch_loss = running_loss / len(trainloader)
